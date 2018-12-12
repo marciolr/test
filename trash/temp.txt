@@ -1,0 +1,285 @@
+private function getNode($dom, $name) {
+	$node=false;
+	if (is_object($dom) && $dom->getElementsByTagName($name)->length != 0) {
+		$node=$dom->getElementsByTagName($name)->item(0)->nodeValue;
+	}
+	return $node;
+}
+private function getTag($dom, $name) {
+	$node=false;
+	if (is_object($dom) && $dom->getElementsByTagName($name)->length != 0) {
+		$node=$dom->getElementsByTagName($name)->item(0);
+	}
+	return $node;
+}
+private function getAttribute($dom, $name) {
+	$node=false;
+	if (is_object($dom)) {
+		$node=$dom->getAttribute($name);
+	}
+	return $node;
+}
+----------
+public function __construct() {
+	set_error_handler(array($this,'_customError'));
+	set_exception_handler(array($this,'_exceptionError'));
+	register_shutdown_function(array($this, '_fatalError'));
+}
+// Errors
+public function _customError($errNo, $errStr, $errFile, $errLine) {
+}
+public function _exceptionError($exception) {
+}
+public function _fatalError() {
+}
+--------------------
+/**
+     * zCleanPubKey
+     * Remove a informação de inicio e fim do certificado
+     * contido no formato PEM, deixando o certificado (chave publica) pronta para ser
+     * anexada ao xml da NFe
+     *
+     * @return string contendo o certificado limpo
+     */
+    protected function zCleanPubKey()
+    {
+        //inicializa variavel
+        $data = '';
+        //carregar a chave publica
+        $pubKey = $this->pubKey;
+        //carrega o certificado em um array usando o LF como referencia
+        $arCert = explode("\n", $pubKey);
+        foreach ($arCert as $curData) {
+            //remove a tag de inicio e fim do certificado
+            if (strncmp($curData, '-----BEGIN CERTIFICATE', 22) != 0
+                && strncmp($curData, '-----END CERTIFICATE', 20) != 0
+            ) {
+                //carrega o resultado numa string
+                $data .= trim($curData);
+            }
+        }
+        return $data;
+    }
+/**
+     * zValidCerts
+     * Verifica a data de validade do certificado digital
+     * e compara com a data de hoje.
+     * Caso o certificado tenha expirado o mesmo será removido das
+     * pastas e o método irá retornar false.
+     *
+     * @param  string $pubKey chave publica
+     * @return boolean
+     */
+    protected function zValidCerts($pubKey)
+    {
+        if (! $data = openssl_x509_read($pubKey)) {
+                $this->error = "A chave passada está corrompida ou não é uma chave. Obtenha as chaves corretas!!";
+                return false;
+        }
+        $certData = openssl_x509_parse($data);
+        // reformata a data de validade;
+        $ano = substr($certData['validTo'], 0, 2);
+        $mes = substr($certData['validTo'], 2, 2);
+        $dia = substr($certData['validTo'], 4, 2);
+        //obtem o timestamp da data de validade do certificado
+        $dValid = gmmktime(0, 0, 0, $mes, $dia, $ano);
+        // obtem o timestamp da data de hoje
+        $dHoje = gmmktime(0, 0, 0, date("m"), date("d"), date("Y"));
+        // compara a data de validade com a data atual
+        $this->expireTimestamp = $dValid;
+        if ($dHoje > $dValid) {
+            $msg = "Certificado vencido! [Valido até $dia/$mes/$ano]";
+            return false;
+        }
+        return true;
+    }
+    /**
+     * zSignXML
+     * Método que provê a assinatura do xml conforme padrão SEFAZ
+     *
+     * @param    DOMDocument $xmldoc
+     * @param    DOMElement  $root
+     * @param    DOMElement  $node
+     * @param    resource    $objSSLPriKey
+     * @return   string xml assinado
+     * @internal param DOMDocument $xmlDoc
+     */
+    private function zSignXML($xmldoc, $root, $node, $objSSLPriKey)
+    {
+        $nsDSIG = 'http://www.w3.org/2000/09/xmldsig#';
+        $nsCannonMethod = 'http://www.w3.org/TR/2001/REC-xml-c14n-20010315';
+        $nsSignatureMethod = 'http://www.w3.org/2000/09/xmldsig#rsa-sha1';
+        $nsTransformMethod1 ='http://www.w3.org/2000/09/xmldsig#enveloped-signature';
+        $nsTransformMethod2 = 'http://www.w3.org/TR/2001/REC-xml-c14n-20010315';
+        $nsDigestMethod = 'http://www.w3.org/2000/09/xmldsig#sha1';
+        //pega o atributo id do node a ser assinado
+        $idSigned = trim($node->getAttribute("Id"));
+        //extrai os dados da tag para uma string na forma canonica
+        $dados = $node->C14N(true, false, null, null);
+        //calcular o hash dos dados
+        $hashValue = hash('sha1', $dados, true);
+        //converter o hash para base64
+        $digValue = base64_encode($hashValue);
+        //cria o node <Signature>
+        $signatureNode = $xmldoc->createElementNS($nsDSIG, 'Signature');
+        //adiciona a tag <Signature> ao node raiz
+        $root->appendChild($signatureNode);
+        //cria o node <SignedInfo>
+        $signedInfoNode = $xmldoc->createElement('SignedInfo');
+        //adiciona o node <SignedInfo> ao <Signature>
+        $signatureNode->appendChild($signedInfoNode);
+        //cria no node com o método de canonização dos dados
+        $canonicalNode = $xmldoc->createElement('CanonicalizationMethod');
+        //adiona o <CanonicalizationMethod> ao node <SignedInfo>
+        $signedInfoNode->appendChild($canonicalNode);
+        //seta o atributo ao node <CanonicalizationMethod>
+        $canonicalNode->setAttribute('Algorithm', $nsCannonMethod);
+        //cria o node <SignatureMethod>
+        $signatureMethodNode = $xmldoc->createElement('SignatureMethod');
+        //adiciona o node <SignatureMethod> ao node <SignedInfo>
+        $signedInfoNode->appendChild($signatureMethodNode);
+        //seta o atributo Algorithm ao node <SignatureMethod>
+        $signatureMethodNode->setAttribute('Algorithm', $nsSignatureMethod);
+        //cria o node <Reference>
+        $referenceNode = $xmldoc->createElement('Reference');
+        //adiciona o node <Reference> ao node <SignedInfo>
+        $signedInfoNode->appendChild($referenceNode);
+        //seta o atributo URI a node <Reference>
+        $referenceNode->setAttribute('URI', '#'.$idSigned);
+        //cria o node <Transforms>
+        $transformsNode = $xmldoc->createElement('Transforms');
+        //adiciona o node <Transforms> ao node <Reference>
+        $referenceNode->appendChild($transformsNode);
+        //cria o primeiro node <Transform> OBS: no singular
+        $transfNode1 = $xmldoc->createElement('Transform');
+        //adiciona o primeiro node <Transform> ao node <Transforms>
+        $transformsNode->appendChild($transfNode1);
+        //set o atributo Algorithm ao primeiro node <Transform>
+        $transfNode1->setAttribute('Algorithm', $nsTransformMethod1);
+        //cria outro node <Transform> OBS: no singular
+        $transfNode2 = $xmldoc->createElement('Transform');
+        //adiciona o segundo node <Transform> ao node <Transforms>
+        $transformsNode->appendChild($transfNode2);
+        //set o atributo Algorithm ao segundo node <Transform>
+        $transfNode2->setAttribute('Algorithm', $nsTransformMethod2);
+        //cria o node <DigestMethod>
+        $digestMethodNode = $xmldoc->createElement('DigestMethod');
+        //adiciona o node <DigestMethod> ao node <Reference>
+        $referenceNode->appendChild($digestMethodNode);
+        //seta o atributo Algorithm ao node <DigestMethod>
+        $digestMethodNode->setAttribute('Algorithm', $nsDigestMethod);
+        //cria o node <DigestValue>
+        $digestValueNode = $xmldoc->createElement('DigestValue', $digValue);
+        //adiciona o node <DigestValue> ao node <Reference>
+        $referenceNode->appendChild($digestValueNode);
+        //extrai node <SignedInfo> para uma string na sua forma canonica
+        $cnSignedInfoNode = $signedInfoNode->C14N(true, false, null, null);
+        //cria uma variavel vazia que receberá a assinatura
+        $signature = '';
+        //calcula a assinatura do node canonizado <SignedInfo>
+        //usando a chave privada em formato PEM
+        if (! openssl_sign($cnSignedInfoNode, $signature, $objSSLPriKey)) {
+            $msg = "Houve erro durante a assinatura digital.\n";
+            $this->zGetOpenSSLError($msg);
+            //while ($erro = openssl_error_string()) {
+            //    $msg .= $erro . "\n";
+            //}
+            //throw new Exception\RuntimeException($msg);
+        }
+        //converte a assinatura em base64
+        $signatureValue = base64_encode($signature);
+        //cria o node <SignatureValue>
+        $signatureValueNode = $xmldoc->createElement('SignatureValue', $signatureValue);
+        //adiciona o node <SignatureValue> ao node <Signature>
+        $signatureNode->appendChild($signatureValueNode);
+        //cria o node <KeyInfo>
+        $keyInfoNode = $xmldoc->createElement('KeyInfo');
+        //adiciona o node <KeyInfo> ao node <Signature>
+        $signatureNode->appendChild($keyInfoNode);
+        //cria o node <X509Data>
+        $x509DataNode = $xmldoc->createElement('X509Data');
+        //adiciona o node <X509Data> ao node <KeyInfo>
+        $keyInfoNode->appendChild($x509DataNode);
+        //remove linhas desnecessárias do certificado
+        $pubKeyClean = $this->zCleanPubKey();
+        //cria o node <X509Certificate>
+        $x509CertificateNode = $xmldoc->createElement('X509Certificate', $pubKeyClean);
+        //adiciona o node <X509Certificate> ao node <X509Data>
+        $x509DataNode->appendChild($x509CertificateNode);
+        //salva o xml completo em uma string
+        $xmlResp = $xmldoc->saveXML();
+        //retorna o documento assinado
+        return $xmlResp;
+    }
+/**
+     * loadPfx
+     * Carrega um novo certificado no formato PFX
+     * Isso deverá ocorrer a cada atualização do certificado digital, ou seja,
+     * pelo menos uma vez por ano, uma vez que a validade do certificado
+     * é anual.
+     * Será verificado também se o certificado pertence realmente ao CNPJ
+     * Essa verificação checa apenas se o certificado pertence a matriz ou filial
+     * comparando apenas os primeiros 8 digitos do CNPJ, dessa forma ambas a
+     * matriz e as filiais poderão usar o mesmo certificado indicado na instanciação
+     * da classe, se não for um erro irá ocorrer e
+     * o certificado não será convertido para o formato PEM.
+     * Em caso de erros, será retornado false e o motivo será indicado no
+     * parâmetro error da classe.
+     * Os certificados serão armazenados como <CNPJ>-<tipo>.pem
+     *
+     * @param  string  $pfxContent     arquivo PFX
+     * @param  string  $password       Senha de acesso ao certificado PFX
+     * @param  boolean $createFiles    se true irá criar os arquivos pem das chaves digitais, caso contrario não
+     * @param  bool    $ignoreValidity
+     * @param  bool    $ignoreOwner
+     * @return bool
+     */
+    public function loadPfx(
+        $pfxContent = '',
+        $password = '',
+        $createFiles = true,
+        $ignoreValidity = false,
+        $ignoreOwner = false
+    ) {
+        if ($password == '') {
+            throw new Exception\InvalidArgumentException(
+                "A senha de acesso para o certificado pfx não pode ser vazia."
+            );
+        }
+        //carrega os certificados e chaves para um array denominado $x509certdata
+        $x509certdata = array();
+        if (!openssl_pkcs12_read($pfxContent, $x509certdata, $password)) {
+            throw new Exception\RuntimeException(
+                "O certificado não pode ser lido!! Senha errada ou arquivo corrompido ou formato inválido!!"
+            );
+        }
+        $this->pfxCert = $pfxContent;
+        if (!$ignoreValidity) {
+            //verifica sua data de validade
+            if (! $this->zValidCerts($x509certdata['cert'])) {
+                throw new Exception\RuntimeException($this->error);
+            }
+        }
+        if (!$ignoreOwner) {
+            $cnpjCert = Asn::getCNPJCert($x509certdata['cert']);
+            if (substr($this->cnpj, 0, 8) != substr($cnpjCert, 0, 8)) {
+                throw new Exception\InvalidArgumentException(
+                    "O Certificado fornecido pertence a outro CNPJ!!"
+                );
+            }
+        }
+        //monta o path completo com o nome da chave privada
+        $this->priKeyFile = $this->pathCerts.$this->cnpj.'_priKEY.pem';
+        //monta o path completo com o nome da chave publica
+        $this->pubKeyFile =  $this->pathCerts.$this->cnpj.'_pubKEY.pem';
+        //monta o path completo com o nome do certificado (chave publica e privada) em formato pem
+        $this->certKeyFile = $this->pathCerts.$this->cnpj.'_certKEY.pem';
+        $this->zRemovePemFiles();
+        if ($createFiles) {
+            $this->zSavePemFiles($x509certdata);
+        }
+        $this->pubKey=$x509certdata['cert'];
+        $this->priKey=$x509certdata['pkey'];
+        $this->certKey=$x509certdata['pkey']."\r\n".$x509certdata['cert'];
+        return true;
+    }
